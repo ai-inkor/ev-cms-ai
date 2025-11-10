@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>EV Charger — Transactions & Analytics</title>
+  <style>
+    :root{--bg:#f6f8fb;--card:#fff;--accent:#0b69ff;--danger:#ff4d4f;--muted:#6b7280}
+    body{font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);margin:18px;color:#0b1724}
+    .wrap{max-width:1200px;margin:0 auto}
+    header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
+    h1{font-size:1.25rem;margin:0}
+    .controls{display:flex;gap:8px;align-items:center}
+    a.btn, button.btn{background:var(--accent);color:white;padding:8px 12px;border-radius:8px;text-decoration:none;border:0;cursor:pointer}
+    .card{background:var(--card);padding:14px;border-radius:10px;box-shadow:0 6px 18px rgba(10,20,40,0.06);margin-bottom:12px}
+    .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+    .stat{padding:10px;border-radius:8px;background:linear-gradient(180deg,#ffffff,#fbfdff);text-align:left}
+    .stat .label{color:var(--muted);font-size:0.8rem}
+    .stat .value{font-size:1.3rem;font-weight:700;margin-top:6px}
+    .charts{display:grid;grid-template-columns:2fr 1fr;gap:12px}
+    .chart-card{padding:12px;border-radius:8px;background:var(--card)}
+    canvas{width:100%!important;height:320px!important}
+    .table-wrap{overflow:auto;max-height:480px}
+    table{width:100%;border-collapse:collapse;font-size:0.95rem}
+    th,td{padding:10px;border-bottom:1px solid #eef2f7;text-align:left;vertical-align:middle}
+    th{position:sticky;top:0;background:linear-gradient(180deg,#fff,#fbfdff);z-index:2}
+    .filters{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+    .chip{padding:6px 10px;border-radius:999px;background:#f1f5f9;color:#334155;cursor:pointer}
+    .chip.active{background:var(--accent);color:#fff}
+    .search{padding:8px;border-radius:8px;border:1px solid #e6eef8;min-width:220px}
+    .muted{color:var(--muted);font-size:0.9rem}
+    .right{margin-left:auto}
+    .small{font-size:0.85rem;color:var(--muted)}
+    .end-btn{background:var(--danger);color:#fff;border:0;padding:6px 8px;border-radius:6px;cursor:pointer}
+    .export-btn{background:#10b981;color:#fff;border:0;padding:6px 10px;border-radius:6px;cursor:pointer}
+    @media (max-width:900px){
+      .grid{grid-template-columns:repeat(2,1fr)}
+      .charts{grid-template-columns:1fr}
+      canvas{height:260px!important}
+    }
+  </style>
+  <!-- Chart.js (non-module) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Transactions & Analytics — EV Charger</h1>
+        <div class="small muted">Full history and analytics powered by Firebase Realtime Database</div>
+      </div>
+      <div class="controls">
+        <a class="btn" href="index.html" title="Open dashboard">Open Dashboard</a>
+        <a class="btn" href="submit.html" title="Open submit form" style="margin-left:8px">Submit</a>
+      </div>
+    </header>
+
+    <section class="card">
+      <div class="grid" id="summaryGrid">
+        <div class="stat">
+          <div class="label">Total Sessions</div>
+          <div class="value" id="totalSessions">0</div>
+          <div class="small muted">All recorded sessions</div>
+        </div>
+        <div class="stat">
+          <div class="label">Total Revenue (₹)</div>
+          <div class="value" id="totalRevenue">0.00</div>
+          <div class="small muted">Sum of amountPaid</div>
+        </div>
+        <div class="stat">
+          <div class="label">Simulated Energy (W·s)</div>
+          <div class="value" id="totalEnergy">0.00</div>
+          <div class="small muted">0.01 × seconds per session (sum)</div>
+        </div>
+        <div class="stat">
+          <div class="label">Simulated Energy (Wh)</div>
+          <div class="value" id="totalEnergyWh">0.00</div>
+          <div class="small muted">Converted: W·s ÷ 3600 = Wh</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card charts" aria-label="charts">
+      <div class="chart-card">
+        <h3 style="margin-top:0">Sessions per Day</h3>
+        <canvas id="sessionsLine"></canvas>
+      </div>
+      <div>
+        <div class="chart-card" style="margin-bottom:12px">
+          <h3 style="margin-top:0">Revenue by Charger</h3>
+          <canvas id="revenueBar" style="height:220px"></canvas>
+        </div>
+        <div class="chart-card">
+          <h3 style="margin-top:0">Active vs Ended</h3>
+          <canvas id="statusDoughnut" style="height:220px"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top:12px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+        <div class="filters" role="tablist">
+          <div class="chip active" data-filter="all">All</div>
+          <div class="chip" data-filter="active">Active</div>
+          <div class="chip" data-filter="ended">Ended</div>
+        </div>
+
+        <input id="searchInput" class="search" placeholder="Search vehicle, charger, session id..." />
+        <button id="exportBtn" class="export-btn right">Export CSV</button>
+      </div>
+
+      <div class="table-wrap">
+        <table id="sessionsTable" aria-describedby="tableDesc">
+          <thead>
+            <tr>
+              <th>Session ID</th>
+              <th>Vehicle</th>
+              <th>Amount (₹)</th>
+              <th>Charger</th>
+              <th>Start Time</th>
+              <th>End Time</th>
+              <th>Duration</th>
+              <th>Sim. Energy (W·s)</th>
+              <th>Sim. Energy (Wh)</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="tableBody">
+            <!-- rows -->
+          </tbody>
+        </table>
+      </div>
+      <div id="tableDesc" class="muted small" style="margin-top:8px">Click "End" to end active sessions. Table updates live.</div>
+    </section>
+  </div>
+
+  <script type="module">
+    // Firebase imports
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-app.js";
+    import { getDatabase, ref, onValue, get, update, child } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-database.js";
+
+    // Your firebaseConfig
+    const firebaseConfig = {
+      apiKey: "AIzaSyASjGl4Q_WBwsXGBj77ujX86O6mewSuHG0",
+      authDomain: "ev-charger-demo-ee045.firebaseapp.com",
+      databaseURL: "https://ev-charger-demo-ee045-default-rtdb.firebaseio.com",
+      projectId: "ev-charger-demo-ee045",
+      storageBucket: "ev-charger-demo-ee045.firebasestorage.app",
+      messagingSenderId: "655394940159",
+      appId: "1:655394940159:web:9b83c5c71ae0219ca498ca",
+      measurementId: "G-7T829DRWX1"
+    };
+
+    // Initialize firebase and DB ref
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+    const sessionsRef = ref(db, 'sessions');
+
+    // DOM references
+    const totalSessionsEl = document.getElementById('totalSessions');
+    const totalRevenueEl = document.getElementById('totalRevenue');
+    const totalEnergyEl = document.getElementById('totalEnergy');
+    const totalEnergyWhEl = document.getElementById('totalEnergyWh');
+    const tableBody = document.getElementById('tableBody');
+    const searchInput = document.getElementById('searchInput');
+    const filterChips = document.querySelectorAll('.chip');
+    const exportBtn = document.getElementById('exportBtn');
+
+    // Charts
+    let sessionsLineChart, revenueBarChart, statusDoughnutChart;
+
+    // Local store
+    let sessions = {}; // key -> session object
+    let chargersCache = {}; // chargerId -> charger object (occupied, label)
+
+    // Utility functions
+    function formatDate(ms) {
+      if (!ms) return '—';
+      const d = new Date(Number(ms));
+      return d.toLocaleString();
+    }
+    function formatDurationMs(ms) {
+      if (ms == null || isNaN(ms)) return '—';
+      const totalSec = Math.floor(ms/1000);
+      const h = Math.floor(totalSec/3600);
+      const m = Math.floor((totalSec%3600)/60);
+      const s = totalSec%60;
+      if (h>0) return `${h}h ${m}m ${s}s`;
+      if (m>0) return `${m}m ${s}s`;
+      return `${s}s`;
+    }
+    function safeNum(v){ return isNaN(Number(v))?0:Number(v); }
+
+    // Compute simulated energy for a session (W·s) using formula 0.01 * elapsedSeconds
+    function computeSimEnergy(session) {
+      const now = Date.now();
+      const start = Number(session.startTime) || now;
+      const end = session.endTime ? Number(session.endTime) : now;
+      const elapsedSec = Math.max(0, (end - start) / 1000);
+      return 0.01 * elapsedSec;
+    }
+
+    // Fetch chargers once for labels and revenue-by-charger
+    async function loadChargers() {
+      try {
+        const snap = await get(ref(db, 'chargers'));
+        if (snap.exists()) chargersCache = snap.val() || {};
+      } catch (e) {
+        console.error('Failed to load chargers:', e);
+      }
+    }
+
+    // Build table rows and charts data
+    function rebuildUI() {
+      const rows = [];
+      let totalRevenue = 0;
+      let totalEnergy = 0;
+      let activeCount = 0;
+      let endedCount = 0;
+
+      // Transform sessions object to array and enrich
+      for (const key in sessions) {
+        const s = sessions[key];
+        const isActive = Boolean(s.active);
+        const start = Number(s.startTime) || null;
+        const end = s.endTime ? Number(s.endTime) : (isActive ? Date.now() : null);
+        const durationMs = (start && end) ? Math.max(0, end - start) : null;
+        const simEnergy = computeSimEnergy(s);
+        const row = {
+          id: key,
+          vehicle: s.vehicleNumber || '',
+          amount: safeNum(s.amountPaid),
+          chargerId: s.chargerId || null,
+          start, end: s.endTime ? Number(s.endTime) : null,
+          durationMs,
+          simEnergy,
+          active: isActive
+        };
+        rows.push(row);
+        totalRevenue += row.amount;
+        totalEnergy += simEnergy;
+        if (isActive) activeCount++; else endedCount++;
+      }
+
+      // Update summary
+      totalSessionsEl.textContent = rows.length;
+      totalRevenueEl.textContent = totalRevenue.toFixed(2);
+      totalEnergyEl.textContent = totalEnergy.toFixed(2);
+      totalEnergyWhEl.textContent = (totalEnergy / 3600).toFixed(4);
+
+      // Build sessions per day (group by date string)
+      const perDay = {}; // dateStr->count
+      rows.forEach(r => {
+        const d = new Date(r.start||Date.now());
+        const key = d.toISOString().slice(0,10); // YYYY-MM-DD
+        perDay[key] = (perDay[key]||0)+1;
+      });
+      const sortedDays = Object.keys(perDay).sort();
+      const dayLabels = sortedDays;
+      const dayCounts = sortedDays.map(d=>perDay[d]);
+
+      // Revenue by charger
+      const revenueByCharger = {};
+      rows.forEach(r => {
+        const cid = r.chargerId || 'unassigned';
+        revenueByCharger[cid] = (revenueByCharger[cid]||0) + r.amount;
+      });
+      const chargerLabels = Object.keys(revenueByCharger);
+      const chargerValues = chargerLabels.map(k=>revenueByCharger[k]);
+
+      // Active vs ended
+      const statusLabels = ['Active','Ended'];
+      const statusValues = [activeCount, endedCount];
+
+      // Update charts
+      updateLineChart(dayLabels, dayCounts);
+      updateBarChart(chargerLabels, chargerValues);
+      updateDoughnut(statusLabels, statusValues);
+
+      // Render table (apply filter + search)
+      renderTable(rows);
+    }
+
+    // Render table rows with current filter & search
+    function renderTable(rows) {
+      const filter = document.querySelector('.chip.active').dataset.filter;
+      const q = (searchInput.value || '').trim().toLowerCase();
+      const filtered = rows.filter(r => {
+        if (filter === 'active' && !r.active) return false;
+        if (filter === 'ended' && r.active) return false;
+        if (q) {
+          const hay = `${r.id} ${r.vehicle} ${r.chargerId || ''}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+
+      // Sort by start time desc
+      filtered.sort((a,b)=> (b.start||0) - (a.start||0));
+
+      tableBody.innerHTML = '';
+      if (filtered.length === 0) {
+        tableBody.innerHTML = '<tr><td colspan="10" class="muted">No matching sessions</td></tr>';
+        return;
+      }
+
+      for (const r of filtered) {
+        const tr = document.createElement('tr');
+
+        const idTd = document.createElement('td'); idTd.textContent = r.id;
+        const vehicleTd = document.createElement('td'); vehicleTd.textContent = r.vehicle || '—';
+        const amountTd = document.createElement('td'); amountTd.textContent = r.amount.toFixed(2);
+        const chargerTd = document.createElement('td');
+        const chargerLabel = r.chargerId ? (chargersCache[r.chargerId]?.label || r.chargerId) : 'unassigned';
+        chargerTd.textContent = chargerLabel;
+
+        const startTd = document.createElement('td'); startTd.textContent = formatDate(r.start);
+        const endTd = document.createElement('td'); endTd.textContent = r.end ? formatDate(r.end) : (r.active ? '— (active)' : '—');
+        const durTd = document.createElement('td'); durTd.textContent = r.durationMs ? formatDurationMs(r.durationMs) : '—';
+        const energyTd = document.createElement('td'); energyTd.textContent = r.simEnergy.toFixed(2);
+        const energyWhTd = document.createElement('td'); energyWhTd.textContent = (r.simEnergy/3600).toFixed(4);
+
+        const actionsTd = document.createElement('td');
+        if (r.active) {
+          const endBtn = document.createElement('button');
+          endBtn.className = 'end-btn';
+          endBtn.textContent = 'End';
+          endBtn.onclick = async () => {
+            if (!confirm(`End session ${r.id} for vehicle ${r.vehicle || 'unknown'}?`)) return;
+            endBtn.disabled = true; endBtn.textContent = 'Ending...';
+            try {
+              const updates = {};
+              updates['sessions/' + r.id + '/active'] = false;
+              updates['sessions/' + r.id + '/endTime'] = Date.now();
+              if (r.chargerId) updates['chargers/' + r.chargerId + '/occupied'] = false;
+              await update(ref(db), updates);
+            } catch (e) {
+              alert('Failed to end session: ' + (e.message || e));
+              endBtn.disabled = false; endBtn.textContent = 'End';
+            }
+          };
+          actionsTd.appendChild(endBtn);
+        } else {
+          actionsTd.textContent = '—';
+        }
+
+        tr.appendChild(idTd);
+        tr.appendChild(vehicleTd);
+        tr.appendChild(amountTd);
+        tr.appendChild(chargerTd);
+        tr.appendChild(startTd);
+        tr.appendChild(endTd);
+        tr.appendChild(durTd);
+        tr.appendChild(energyTd);
+        tr.appendChild(energyWhTd);
+        tr.appendChild(actionsTd);
+
+        tableBody.appendChild(tr);
+      }
+    }
+
+    // Charts init & update
+    function initCharts() {
+      const lineCtx = document.getElementById('sessionsLine').getContext('2d');
+      sessionsLineChart = new Chart(lineCtx, {
+        type: 'line',
+        data: { labels: [], datasets: [{ label: 'Sessions', data: [], borderColor: '#0b69ff', backgroundColor: 'rgba(11,105,255,0.12)', fill:true, tension:0.2 }]},
+        options: { responsive:true, plugins:{legend:{display:false}} }
+      });
+
+      const barCtx = document.getElementById('revenueBar').getContext('2d');
+      revenueBarChart = new Chart(barCtx, {
+        type: 'bar',
+        data: { labels: [], datasets: [{ label:'Revenue (₹)', data:[], backgroundColor: '#2563eb' }]},
+        options: { responsive:true, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}} }
+      });
+
+      const doughCtx = document.getElementById('statusDoughnut').getContext('2d');
+      statusDoughnutChart = new Chart(doughCtx, {
+        type: 'doughnut',
+        data: { labels: ['Active','Ended'], datasets: [{ data:[0,0], backgroundColor: ['#f59e0b','#10b981'] }]},
+        options: { responsive:true }
+      });
+    }
+
+    function updateLineChart(labels, data) {
+      sessionsLineChart.data.labels = labels;
+      sessionsLineChart.data.datasets[0].data = data;
+      sessionsLineChart.update();
+    }
+    function updateBarChart(labels, data) {
+      revenueBarChart.data.labels = labels.map(l => (chargersCache[l]?.label) || l);
+      revenueBarChart.data.datasets[0].data = data;
+      revenueBarChart.update();
+    }
+    function updateDoughnut(labels, data) {
+      statusDoughnutChart.data.labels = labels;
+      statusDoughnutChart.data.datasets[0].data = data;
+      statusDoughnutChart.update();
+    }
+
+    // CSV export
+    function exportCSV() {
+      // Build rows using currently displayed table rows
+      const rows = [];
+      const header = ['sessionId','vehicleNumber','amountPaid','chargerId','startTime','endTime','durationSec','simEnergy_Ws','simEnergy_Wh','active'];
+      rows.push(header.join(','));
+      for (const key in sessions) {
+        const s = sessions[key];
+        const start = s.startTime ? Number(s.startTime) : '';
+        const end = s.endTime ? Number(s.endTime) : '';
+        const durationSec = (start && end) ? Math.floor((end - start)/1000) : (s.active ? Math.floor((Date.now()-start)/1000) : '');
+        const simEnergy = computeSimEnergy(s);
+        const simEnergyWh = simEnergy/3600;
+        const line = [
+          `"${key}"`,
+          `"${(s.vehicleNumber||'')}"`,
+          Number(s.amountPaid||0).toFixed(2),
+          `"${s.chargerId||''}"`,
+          `"${start?new Date(start).toISOString():''}"`,
+          `"${end?new Date(end).toISOString():''}"`,
+          durationSec,
+          simEnergy.toFixed(4),
+          simEnergyWh.toFixed(6),
+          s.active ? 'true' : 'false'
+        ].join(',');
+        rows.push(line);
+      }
+      const csv = rows.join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'ev_charger_sessions.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // Realtime listener for sessions
+    onValue(sessionsRef, async (snap) => {
+      sessions = snap.val() || {};
+      // Also refresh chargers cache (to show labels)
+      await loadChargers();
+      rebuildUI();
+    });
+
+    // UI interactions
+    filterChips.forEach(chip => {
+      chip.addEventListener('click', () => {
+        filterChips.forEach(c=>c.classList.remove('active'));
+        chip.classList.add('active');
+        rebuildUI();
+      });
+    });
+    searchInput.addEventListener('input', () => {
+      rebuildUI();
+    });
+    exportBtn.addEventListener('click', exportCSV);
+
+    // Initialize
+    initCharts();
+    // Initial load of chargers and sessions (listener will call rebuildUI once data arrives)
+    loadChargers().catch(()=>{});
+  </script>
+</body>
+</html>
