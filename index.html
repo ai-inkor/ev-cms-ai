@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>EV Charger Dashboard — Live</title>
+  <style>
+    body { font-family: Arial, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; margin: 18px; background:#f7f9fc; color:#111 }
+    header { display:flex; justify-content:space-between; align-items:center; margin-bottom:18px }
+    h1 { margin:0; font-size:1.3rem }
+    .card { background: #fff; padding:16px; border-radius:8px; box-shadow: 0 1px 4px rgba(20,30,60,0.06); margin-bottom:12px }
+    .stats { display:flex; gap:12px; }
+    .stat { padding:12px; border-radius:8px; background:#f0f4ff; min-width:160px; }
+    .stat strong{display:block; font-size:1.6rem}
+    #sessions { width:100%; border-collapse:collapse; margin-top:10px }
+    #sessions th, #sessions td { text-align:left; padding:8px; border-bottom:1px solid #eee }
+    .small { font-size:0.9rem; color:#555 }
+    a.button { background:#0b69ff; color:white; padding:8px 12px; border-radius:6px; text-decoration:none }
+    .muted { color:#666 }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>EV Charger Monitoring — Live Dashboard</h1>
+    <div>
+      <a class="button" href="submit.html" target="_blank">Open Submit Page</a>
+    </div>
+  </header>
+
+  <section class="card">
+    <div class="stats">
+      <div class="stat">
+        <div class="small">Chargers online</div>
+        <strong id="chargersOnline">0</strong>
+      </div>
+      <div class="stat">
+        <div class="small">Total power (W)</div>
+        <strong id="totalPower">0.00</strong>
+      </div>
+      <div class="stat">
+        <div class="small">Active sessions</div>
+        <strong id="activeCount">0</strong>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h3 style="margin-top:0">Currently Charging</h3>
+    <table id="sessions">
+      <thead>
+        <tr><th>Vehicle</th><th>Amount paid</th><th>Charger</th><th>Elapsed</th></tr>
+      </thead>
+      <tbody id="sessionsBody">
+        <!-- filled by JS -->
+      </tbody>
+    </table>
+    <div id="lastUpdated" class="muted small" style="margin-top:10px">Waiting for data...</div>
+  </section>
+
+  <script type="module">
+    // Firebase imports (CDN modular SDK)
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-app.js";
+    import { getDatabase, ref, push, set, onValue, get, child, update } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-database.js";
+
+    // YOUR firebaseConfig (as provided)
+    const firebaseConfig = {
+      apiKey: "AIzaSyASjGl4Q_WBwsXGBj77ujX86O6mewSuHG0",
+      authDomain: "ev-charger-demo-ee045.firebaseapp.com",
+      databaseURL: "https://ev-charger-demo-ee045-default-rtdb.firebaseio.com",
+      projectId: "ev-charger-demo-ee045",
+      storageBucket: "ev-charger-demo-ee045.firebasestorage.app",
+      messagingSenderId: "655394940159",
+      appId: "1:655394940159:web:9b83c5c71ae0219ca498ca",
+      measurementId: "G-7T829DRWX1"
+    };
+
+    // Initialize Firebase
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    // DOM references
+    const chargersOnlineEl = document.getElementById('chargersOnline');
+    const totalPowerEl = document.getElementById('totalPower');
+    const sessionsBody = document.getElementById('sessionsBody');
+    const activeCountEl = document.getElementById('activeCount');
+    const lastUpdatedEl = document.getElementById('lastUpdated');
+
+    // Local store for sessions
+    const sessions = {}; // { sessionKey: {vehicleNumber, amountPaid, startTime, chargerId, active} }
+
+    // Listen for sessions node changes — this gives live updates
+    const sessionsRef = ref(db, 'sessions');
+    onValue(sessionsRef, (snap) => {
+      const v = snap.val() || {};
+      // replace local store
+      for (const k in sessions) delete sessions[k];
+      for (const k in v) sessions[k] = v[k];
+      // Ensure numeric conversion where needed
+      updateUI(); // render right away (powers will be live-updated in interval)
+    });
+
+    // Helper: format elapsed time from startTime (ms) to mm:ss or hh:mm:ss
+    function formatElapsed(startMs) {
+      if (!startMs) return '-';
+      const elapsed = Math.max(0, Date.now() - startMs);
+      const totalSec = Math.floor(elapsed / 1000);
+      const h = Math.floor(totalSec/3600);
+      const m = Math.floor((totalSec%3600)/60);
+      const s = totalSec % 60;
+      if (h>0) return `${h}h ${m}m ${s}s`;
+      if (m>0) return `${m}m ${s}s`;
+      return `${s}s`;
+    }
+
+    // Returns total power in watts, and other derived values
+    function computeTotals() {
+      let totalPower = 0;
+      let activeCount = 0;
+      const now = Date.now();
+      for (const k in sessions) {
+        const s = sessions[k];
+        if (s && s.active) {
+          activeCount++;
+          const start = Number(s.startTime) || now;
+          const elapsedSec = Math.max(0, (now - start) / 1000);
+          totalPower += 0.01 * elapsedSec; // 0.01 watt per second
+        }
+      }
+      return { totalPower, activeCount };
+    }
+
+    // Update DOM snapshot (list & stats)
+    function updateUI() {
+      // Render sessions table with active sessions first
+      const rows = [];
+      for (const k in sessions) {
+        const s = sessions[k];
+        if (!s || !s.active) continue;
+        rows.push({ key:k, s });
+      }
+      // sort by startTime ascending
+      rows.sort((a,b)=> (a.s.startTime||0) - (b.s.startTime||0));
+      sessionsBody.innerHTML = '';
+      for (const r of rows) {
+        const s = r.s;
+        const tr = document.createElement('tr');
+        const vehicle = document.createElement('td');
+        vehicle.textContent = s.vehicleNumber || '—';
+        const amount = document.createElement('td');
+        amount.textContent = (s.amountPaid!=null) ? '₹' + Number(s.amountPaid).toFixed(2) : '—';
+        const charger = document.createElement('td');
+        charger.textContent = s.chargerId || 'unassigned';
+        const elapsed = document.createElement('td');
+        elapsed.textContent = formatElapsed(Number(s.startTime));
+        tr.appendChild(vehicle);
+        tr.appendChild(amount);
+        tr.appendChild(charger);
+        tr.appendChild(elapsed);
+        sessionsBody.appendChild(tr);
+      }
+
+      // Update counts & last updated note (power will be updated by interval)
+      const totals = computeTotals();
+      activeCountEl.textContent = totals.activeCount;
+      chargersOnlineEl.textContent = totals.activeCount; // using active sessions count
+      lastUpdatedEl.textContent = 'Last data sync: ' + new Date().toLocaleTimeString();
+    }
+
+    // Live update of totalPower every second (recompute using formula)
+    function tickTotalPower() {
+      const totals = computeTotals();
+      totalPowerEl.textContent = totals.totalPower.toFixed(2);
+      // we also update elapsed times inside session rows
+      // Recompute session rows' elapsed text content (lighter approach: re-render)
+      // For simplicity we re-run updateUI (it is cheap for small demo)
+      updateUI();
+    }
+
+    // Start interval
+    setInterval(tickTotalPower, 1000);
+    // Also run once now
+    tickTotalPower();
+
+    // Optional: show a helpful message when there are no active sessions
+    onValue(sessionsRef, (snap) => {
+      if (!snap.exists()) {
+        sessionsBody.innerHTML = '<tr><td colspan="4" class="muted">No active sessions</td></tr>';
+      }
+    });
+
+  </script>
+</body>
+</html>
