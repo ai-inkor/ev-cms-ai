@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>EV Charger — Submit Session</title>
+  <style>
+    body { font-family: Arial, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; margin:24px; background:#f7f9fc; color:#111 }
+    .card { background:#fff; padding:18px; border-radius:8px; box-shadow:0 1px 5px rgba(20,30,60,0.06); max-width:520px }
+    label { display:block; margin-top:12px; font-weight:600; font-size:0.95rem }
+    input[type=text], input[type=number] { width:100%; padding:10px; margin-top:6px; border-radius:6px; border:1px solid #ddd; font-size:1rem }
+    button { margin-top:14px; background:#0b69ff; color:white; padding:10px 14px; border-radius:8px; border:0; cursor:pointer }
+    .small { font-size:0.9rem; color:#555 }
+    .muted { color:#666 }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2 style="margin-top:0">Start Charging — Submit</h2>
+    <form id="sessionForm">
+      <label>Vehicle number
+        <input id="vehicleNumber" type="text" placeholder="e.g. MH12AB1234" required />
+      </label>
+      <label>Amount to pay (₹)
+        <input id="amount" type="number" placeholder="e.g. 50" min="0" step="0.01" required />
+      </label>
+      <button type="submit">Submit Payment & Start</button>
+    </form>
+    <div id="result" class="small muted" style="margin-top:12px"></div>
+
+    <hr style="margin:18px 0"/>
+    <div class="small">
+      This demo will auto-assign a free charger if one exists (first free charger). If none are free, the session will be recorded with "unassigned".
+    </div>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-app.js";
+    import { getDatabase, ref, push, set, onValue, get, child, update } from "https://www.gstatic.com/firebasejs/9.22.2/firebase-database.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyASjGl4Q_WBwsXGBj77ujX86O6mewSuHG0",
+      authDomain: "ev-charger-demo-ee045.firebaseapp.com",
+      databaseURL: "https://ev-charger-demo-ee045-default-rtdb.firebaseio.com",
+      projectId: "ev-charger-demo-ee045",
+      storageBucket: "ev-charger-demo-ee045.firebasestorage.app",
+      messagingSenderId: "655394940159",
+      appId: "1:655394940159:web:9b83c5c71ae0219ca498ca",
+      measurementId: "G-7T829DRWX1"
+    };
+
+    // Initialize Firebase
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    const form = document.getElementById('sessionForm');
+    const vehicleInput = document.getElementById('vehicleNumber');
+    const amountInput = document.getElementById('amount');
+    const resultEl = document.getElementById('result');
+
+    // Helper: find first free charger (occupied === false). Returns chargerId or null.
+    async function findFreeCharger() {
+      const chargersSnap = await get(ref(db, 'chargers'));
+      if (!chargersSnap.exists()) return null;
+      const chargers = chargersSnap.val();
+      for (const key in chargers) {
+        const c = chargers[key];
+        // treat missing occupied as false
+        if (!c.occupied) return key;
+      }
+      return null;
+    }
+
+    // When the form is submitted
+    form.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      resultEl.textContent = 'Processing...';
+      const vehicle = vehicleInput.value.trim();
+      const amount = Number(amountInput.value) || 0;
+      if (!vehicle) { resultEl.textContent = 'Please enter a vehicle number.'; return; }
+
+      try {
+        const freeChargerId = await findFreeCharger();
+        const startTime = Date.now();
+
+        // Build session object
+        const session = {
+          vehicleNumber: vehicle,
+          amountPaid: amount,
+          startTime: startTime,
+          chargerId: freeChargerId || null,
+          active: true
+        };
+
+        // Push session to /sessions
+        const newSessionRef = push(ref(db, 'sessions'));
+        await set(newSessionRef, session);
+
+        // Mark charger occupied if assigned
+        if (freeChargerId) {
+          await update(ref(db, 'chargers/' + freeChargerId), { occupied: true });
+          resultEl.textContent = `Started session on ${freeChargerId}. Session id: ${newSessionRef.key}`;
+        } else {
+          resultEl.textContent = `No free charger found — session recorded as unassigned. Session id: ${newSessionRef.key}`;
+        }
+
+        // Clear form
+        form.reset();
+      } catch (err) {
+        console.error(err);
+        resultEl.textContent = 'Error: ' + (err.message || err);
+      }
+    });
+
+  </script>
+</body>
+</html>
