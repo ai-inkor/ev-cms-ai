@@ -13,10 +13,22 @@
     .stat { padding:12px; border-radius:8px; background:#f0f4ff; min-width:160px; }
     .stat strong{display:block; font-size:1.6rem}
     #sessions { width:100%; border-collapse:collapse; margin-top:10px }
-    #sessions th, #sessions td { text-align:left; padding:8px; border-bottom:1px solid #eee }
+    #sessions th, #sessions td { text-align:left; padding:8px; border-bottom:1px solid #eee; vertical-align:middle }
     .small { font-size:0.9rem; color:#555 }
     a.button { background:#0b69ff; color:white; padding:8px 12px; border-radius:6px; text-decoration:none }
     .muted { color:#666 }
+    .end-btn {
+      background: #ff4d4f;
+      color: #fff;
+      border: none;
+      padding: 6px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    .end-btn[disabled] { opacity: 0.6; cursor: not-allowed; }
+    .row-actions { display:flex; gap:8px; align-items:center; }
+    .tiny { font-size:0.85rem; color:#444 }
   </style>
 </head>
 <body>
@@ -48,7 +60,13 @@
     <h3 style="margin-top:0">Currently Charging</h3>
     <table id="sessions">
       <thead>
-        <tr><th>Vehicle</th><th>Amount paid</th><th>Charger</th><th>Elapsed</th></tr>
+        <tr>
+          <th>Vehicle</th>
+          <th>Amount paid</th>
+          <th>Charger</th>
+          <th>Elapsed</th>
+          <th style="width:150px">Actions</th>
+        </tr>
       </thead>
       <tbody id="sessionsBody">
         <!-- filled by JS -->
@@ -95,7 +113,6 @@
       // replace local store
       for (const k in sessions) delete sessions[k];
       for (const k in v) sessions[k] = v[k];
-      // Ensure numeric conversion where needed
       updateUI(); // render right away (powers will be live-updated in interval)
     });
 
@@ -144,18 +161,45 @@
       for (const r of rows) {
         const s = r.s;
         const tr = document.createElement('tr');
+
         const vehicle = document.createElement('td');
         vehicle.textContent = s.vehicleNumber || '—';
+
         const amount = document.createElement('td');
         amount.textContent = (s.amountPaid!=null) ? '₹' + Number(s.amountPaid).toFixed(2) : '—';
+
         const charger = document.createElement('td');
         charger.textContent = s.chargerId || 'unassigned';
+
         const elapsed = document.createElement('td');
         elapsed.textContent = formatElapsed(Number(s.startTime));
+
+        const actions = document.createElement('td');
+        const rowActions = document.createElement('div');
+        rowActions.className = 'row-actions';
+
+        // End session button
+        const endBtn = document.createElement('button');
+        endBtn.className = 'end-btn';
+        endBtn.type = 'button';
+        endBtn.textContent = 'End Session';
+        endBtn.title = 'End this charging session and free the charger';
+        endBtn.onclick = () => handleEndSession(r.key, s, endBtn);
+
+        rowActions.appendChild(endBtn);
+        // small helper text showing session id (tiny)
+        const tinyId = document.createElement('div');
+        tinyId.className = 'tiny';
+        tinyId.textContent = r.key;
+        rowActions.appendChild(tinyId);
+
+        actions.appendChild(rowActions);
+
         tr.appendChild(vehicle);
         tr.appendChild(amount);
         tr.appendChild(charger);
         tr.appendChild(elapsed);
+        tr.appendChild(actions);
         sessionsBody.appendChild(tr);
       }
 
@@ -164,6 +208,39 @@
       activeCountEl.textContent = totals.activeCount;
       chargersOnlineEl.textContent = totals.activeCount; // using active sessions count
       lastUpdatedEl.textContent = 'Last data sync: ' + new Date().toLocaleTimeString();
+
+      if (rows.length === 0) {
+        sessionsBody.innerHTML = '<tr><td colspan="5" class="muted">No active sessions</td></tr>';
+      }
+    }
+
+    // End session handler: sets session.active = false, adds endTime, and frees charger (occupied=false) if assigned.
+    async function handleEndSession(sessionKey, sessionObj, btn) {
+      if (!confirm(`End session for vehicle ${sessionObj.vehicleNumber || 'unknown'}? This will mark the session ended and free the charger.`)) return;
+      try {
+        btn.disabled = true;
+        btn.textContent = 'Ending...';
+
+        // Mark session inactive and record endTime
+        const updates = {};
+        updates['sessions/' + sessionKey + '/active'] = false;
+        updates['sessions/' + sessionKey + '/endTime'] = Date.now();
+
+        // If a chargerId exists, free it
+        if (sessionObj.chargerId) {
+          updates['chargers/' + sessionObj.chargerId + '/occupied'] = false;
+        }
+
+        // Perform multi-location update
+        await update(ref(db), updates);
+
+        // UI will update automatically via onValue listener
+      } catch (err) {
+        console.error('Failed to end session:', err);
+        alert('Error ending session: ' + (err.message || err));
+        btn.disabled = false;
+        btn.textContent = 'End Session';
+      }
     }
 
     // Live update of totalPower every second (recompute using formula)
@@ -184,7 +261,7 @@
     // Optional: show a helpful message when there are no active sessions
     onValue(sessionsRef, (snap) => {
       if (!snap.exists()) {
-        sessionsBody.innerHTML = '<tr><td colspan="4" class="muted">No active sessions</td></tr>';
+        sessionsBody.innerHTML = '<tr><td colspan="5" class="muted">No active sessions</td></tr>';
       }
     });
 
